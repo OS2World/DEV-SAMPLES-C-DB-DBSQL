@@ -1,0 +1,720 @@
+/****************************************************************************/
+/*                                                                          */
+/* MODULE     : DBSQL.SQC                                                   */
+/* TITLE      : SQL API for C                                               */
+/* ENVIROMENT : OS/2 Base Enviroment                                        */
+/* VERSION    : 1.10                                                        */
+/* STATUS     : ALPHA                                                       */
+/*                                                                          */
+/* DEVELOPED BY:                                                            */
+/*      Bradley S. Gibson                                                   */
+/*                                                                          */
+/* COPYRIGHT:                                                               */
+/*      Copyright (c) 1989, 1990 Bradley S. Gibson                          */
+/*                                                                          */
+/*  DESCRIPTION:                                                            */
+/*                                                                          */
+/* MODULE REQUIREMENTS:                                                     */
+/*                                                                          */
+/****************************************************************************/
+
+#include <os2.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include <sqlenv.h>		// SQL OS/2 EE 1.2
+#include <sqlcodes.h>
+#include <sql.h>
+#include <sqlca.h>
+#include <sqlda.h>
+#include <sqlutil.h>
+
+#include "\muglib\upm.h"        // User Profile Management
+
+#include "dbsql.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+EXEC SQL BEGIN DECLARE SECTION;
+
+    char    *pszSqlCommandBuffer;
+
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL WHENEVER SQLWARNING continue;
+
+#define NOTFOUND    100
+
+SHORT sSqlProcessNumber = 0;
+
+
+BOOL CEXPENTRY SqlCreateDatabase ( PSZ pszDbName, PSZ pszComment,  CHAR cDrive )
+{
+    sqlecred ( pszDbName, cDrive, pszComment, 0, &sqlca );
+
+    if ( sqlca.sqlcode == 0 )
+        return TRUE;
+    
+    return FALSE;
+}
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlOpenDB ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+PSQLPROCESS CEXPENTRY SqlOpenDB ( PSZ pszDbName )
+{
+    PSQLPROCESS pSqlProcess;
+
+    pSqlProcess = (PSQLPROCESS) malloc ( sizeof (SQLPROCESS) );
+    pSqlProcess->pszCmdBuf =  (CHAR *) malloc ( SQL_MAXCMDBUF );
+
+    strcpy ( pSqlProcess->szDbName,   pszDbName );
+    strcpy ( pSqlProcess->pszCmdBuf, "" );
+    pSqlProcess->sProcessNum = sSqlProcessNumber;
+    sSqlProcessNumber++;
+    
+    // START DATABASE MANAGER
+    sqlestar ( );
+    
+    // DYNAMIC BIND TO DATABASE
+    sqlabind ( "dbsql.bnd", pSqlProcess->szDbName, NULL, NULL, NULL, &sqlca );
+    
+    // START USING DATABASE
+    sqlestrd ( pSqlProcess->szDbName, 'S', &sqlca );
+
+    return pSqlProcess;
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlCloseDB ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+VOID CEXPENTRY SqlCloseDB	( PSQLPROCESS pSqlProcess )
+{
+    SqlCommit ( pSqlProcess );
+    
+    // STOP USING DATABASE
+    sqlestpd ( &sqlca );
+    
+    free ( pSqlProcess->pszCmdBuf );
+    free ( pSqlProcess->pBindVar );
+    free ( pSqlProcess );
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlCommand ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+BOOL CEXPENTRY SqlCommand ( PSQLPROCESS pSqlProcess, PSZ pszSqlCmd )
+{
+    strcat ( pSqlProcess->pszCmdBuf, pszSqlCmd );
+    
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlCommandf ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+BOOL CEXPENTRY SqlCommandf ( PSQLPROCESS pSqlProcess, PSZ pszSqlCmd, ... )
+{   
+    CHAR szTmpBuf [512];
+    va_list arg_ptr;
+    
+    va_start ( arg_ptr, pszSqlCmd );
+    vsprintf ( szTmpBuf, pszSqlCmd, arg_ptr );
+    va_end   ( arg_ptr );
+    
+    SqlCommand ( pSqlProcess, szTmpBuf );
+    
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlExecute ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+BOOL CEXPENTRY SqlExecute ( PSQLPROCESS pSqlProcess )
+{   
+    PSQLDA pSqlDa;
+
+    pSqlDa = AllocSqlDa ( 1 );
+
+    pszSqlCommandBuffer = pSqlProcess->pszCmdBuf;
+
+    EXEC SQL
+	PREPARE stmt INTO :*pSqlDa FROM :pszSqlCommandBuffer;
+
+    if ( pSqlDa->sqld == 0 )      // Non Select Statement
+    {
+        EXEC SQL EXECUTE stmt;
+    }
+    else                          // Select Statement
+    {
+        pSqlDa = AllocSqlDa ( pSqlDa->sqld );
+        
+        EXEC SQL
+	    PREPARE stmt INTO :*pSqlDa FROM :pszSqlCommandBuffer;
+        
+        pSqlProcess->pBindVar = malloc (sizeof(USHORT) + (pSqlDa->sqld * sizeof (BINDTYPE)) );
+    }
+    
+    pSqlProcess->pSqlDa = pSqlDa;
+    
+    strcpy ( pSqlProcess->pszCmdBuf, "" );
+
+    if ( sqlca.sqlcode == 0 )
+        return TRUE;
+    
+    return FALSE;
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlBindByNum ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+VOID CEXPENTRY SqlBindByNum ( PSQLPROCESS pSqlProcess, USHORT usColNum, PVOID pVar, SHORT sBindType )
+{
+    pSqlProcess->pBindVar->pBindType[usColNum-1].pBindAddress = pVar;
+    pSqlProcess->pBindVar->pBindType[usColNum-1].sBindType    = sBindType;
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlBindByName ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+VOID CEXPENTRY SqlBindByName ( PSQLPROCESS pSqlProcess, PSZ pszColName, PVOID pVar, SHORT sBindType )
+{
+    pSqlProcess;
+    pszColName;
+    pVar;
+    sBindType;
+}
+
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlResults ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+BOOL CEXPENTRY SqlResults ( PSQLPROCESS pSqlProcess )
+{
+    pSqlProcess;
+
+    return TRUE;
+}
+
+
+BOOL CEXPENTRY SqlOpenCursor  ( PSQLPROCESS pSqlProcess )
+{
+    EXEC SQL DECLARE c1 CURSOR FOR stmt;
+    EXEC SQL OPEN c1;
+    
+    AllocRow ( pSqlProcess->pSqlDa );
+    
+    if ( sqlca.sqlcode == 0 )
+        return TRUE;
+    
+    return FALSE;
+}
+
+BOOL CEXPENTRY SqlCloseCursor ( PSQLPROCESS pSqlProcess )
+{   
+    EXEC SQL CLOSE c1;
+    
+    FreeRow   ( pSqlProcess->pSqlDa );
+    FreeSqlDa ( pSqlProcess->pSqlDa );
+    
+    return SqlCommit ( pSqlProcess );
+}
+
+
+
+/****************************************************************************/
+/*
+    FUNCTION:    SqlFetchRow ( )
+    
+    DESCRIPTION: 
+    
+    PARAMETERS:  
+
+    RETURNS:     
+*/
+/****************************************************************************/
+
+
+BOOL CEXPENTRY SqlFetchRow ( PSQLPROCESS pSqlProcess )
+{   
+    PSQLDA pSqlDa;
+    
+    pSqlDa = pSqlProcess->pSqlDa;
+    
+    EXEC SQL FETCH c1 USING DESCRIPTOR :*pSqlDa;
+    BindRow ( pSqlProcess );
+    
+    if ( sqlca.sqlcode == NOTFOUND )
+        return FALSE;
+    else
+        return TRUE;
+    
+    return FALSE;
+}
+
+
+BOOL CEXPENTRY SqlCommit ( PSQLPROCESS pSqlProcess )
+{
+    EXEC SQL COMMIT WORK;
+    
+    if ( sqlca.sqlcode == 0 )
+        return TRUE;
+    
+    return FALSE;
+}
+
+BOOL CEXPENTRY SqlRollback ( PSQLPROCESS pSqlProcess )
+{
+    EXEC SQL ROLLBACK WORK;
+    
+    if ( sqlca.sqlcode == 0 )
+        return TRUE;
+    
+    return FALSE;
+}
+
+BOOL CEXPENTRY SqlImport ( PSQLPROCESS pSqlProcess, PSZ pszTable, PSZ pszFile, SHORT sFileType, SHORT sInsert )
+{
+    static PSZ apszFileType[4] = {SQL_ASC, SQL_DEL, SQL_WSF, SQL_IXF};
+    static PSZ apszImport[4] = {"INSERT", "REPLACE", "CREATE", "CREATE_REPLACE"};
+    struct sqldcol *docldata;
+    struct sqlchar *tcolstrg;
+    struct sqlchar *filetmod;
+    short  callerac;
+
+    docldata = (struct sqldcol *)NULL;
+    filetmod = (struct sqlchar *)NULL;
+    tcolstrg = (struct sqlchar *)malloc ( sizeof(struct sqldcol) + (128) );
+    callerac = 0;
+
+    tcolstrg->length = sprintf ( tcolstrg->data, "%s INTO %s", apszImport[sInsert], pszTable );
+
+    // Debug Code
+    printf ( "Debug\n");
+    printf ( "File Type:  %s \n", apszFileType[sFileType] );
+    printf ( "Import Comand : %s : %d\n", tcolstrg->data, tcolstrg->length );
+
+    sqluimp ( pSqlProcess->szDbName, pszFile, docldata, tcolstrg,
+	      apszFileType[sFileType], filetmod, DBSQLMSG, callerac, &sqlca );
+
+    free ( tcolstrg );
+
+    printf ( "SQLCODE %d\n", sqlca.sqlcode );
+
+    if ( sqlca.sqlcode == 0 )
+       return TRUE;
+
+    return FALSE;
+}
+
+BOOL CEXPENTRY SqlExport ( PSQLPROCESS pSqlProcess, PSZ pszTable, PSZ pszFile, SHORT sFileType )
+{
+    static PSZ apszFileType[4] = {SQL_ASC, SQL_DEL, SQL_WSF, SQL_IXF};
+
+    struct sqldcol *docldata;
+    struct sqlchar *tcolstrg;
+    struct sqlchar *filetmod;
+    short  callerac;
+
+    docldata = (struct sqldcol *)NULL;
+    filetmod = (struct sqlchar *)NULL;
+    tcolstrg = (struct sqlchar *)malloc ( sizeof(struct sqldcol) + (128) );
+    callerac = 0;
+
+    tcolstrg->length = sprintf ( tcolstrg->data, "SELECT * FROM  %s", pszTable );
+
+    // Debug Code
+    printf ( "Debug\n");
+    printf ( "File Type:  %s \n", apszFileType[sFileType] );
+    printf ( "Import Comand : %s : %d\n", tcolstrg->data, tcolstrg->length );
+
+    sqluexp ( pSqlProcess->szDbName, pszFile, docldata, tcolstrg,
+	      apszFileType[sFileType], filetmod, DBSQLMSG, callerac, &sqlca );
+
+    free ( tcolstrg );
+
+    if ( sqlca.sqlcode == 0 )
+       return TRUE;
+
+    return FALSE;
+}
+
+USHORT  CEXPENTRY SqlGetNumberColumns ( PSQLPROCESS pSqlProcess )
+{
+    return (USHORT) pSqlProcess->pSqlDa->sqld;
+}
+
+SQLCOLUMNINFO CEXPENTRY SqlGetColumnNameInfo ( PSQLPROCESS pSqlProcess, SHORT sColNum )
+{
+    SQLCOLUMNINFO SqlColInfo;
+    SHORT         sColNameLen;
+    SHORT         sColLen;
+    BYTE          p,s;
+    
+    sColNameLen = pSqlProcess->pSqlDa->sqlvar[sColNum].sqlname.length;
+    strncpy ( SqlColInfo.szColumnName, pSqlProcess->pSqlDa->sqlvar[sColNum].sqlname.data, sColNameLen );
+    SqlColInfo.szColumnName[sColNameLen] = '\0';
+    
+    SqlColInfo.sSqlType = pSqlProcess->pSqlDa->sqlvar[sColNum].sqltype;
+    
+    sColLen = pSqlProcess->pSqlDa->sqlvar[sColNum].sqllen;
+    if ( SqlColInfo.sSqlType == 484 || SqlColInfo.sSqlType == 485 )
+    {
+        p = (BYTE)(sColLen & 0x00FF);
+        s = (BYTE)(sColLen >> 8);
+        
+        SqlColInfo.sSqlLength =  p + s + 1;
+    }
+    else
+        SqlColInfo.sSqlLength = sColLen;
+
+    return SqlColInfo;
+}
+
+
+PVOID CEXPENTRY  SqlCreateColumnVar   ( PSQLPROCESS pSqlProcess, SHORT sColNum )
+{
+    PSQLDA	pSqlDa;
+    PVOID	pVar;
+    USHORT	usDataLen;
+
+    pSqlDa = pSqlProcess->pSqlDa;
+
+    switch ( pSqlDa->sqlvar[sColNum].sqltype )
+    {
+            case 452:        // CHAR ( n )
+	    case 453:
+            case 384:       // DATE
+            case 385:
+            case 388:       // TIME
+            case 389:
+            case 392:       // TIMESTAMP
+            case 393:
+		 usDataLen = pSqlDa->sqlvar[sColNum].sqllen + 1;
+		break;
+
+            case 448:       // VARCHAR ( n )
+	    case 449:
+		break;
+
+            case 500:       // SMALLINT
+	    case 501:
+		usDataLen = sizeof ( short );
+
+            case 496:       // INTEGER
+	    case 497:
+		usDataLen = sizeof ( long );
+		break;
+
+            case 480:       // FLOAT
+            case 481:
+            case 484:       // DECIMAL ( p, s )
+	    case 485:
+		usDataLen = sizeof ( double );
+		break;
+    }
+
+    return pVar;
+}
+
+
+VOID CEXPENTRY	SqlDeleteColumnVar   ( PSQLPROCESS pSqlProcess, PVOID pVar )
+{
+    pSqlProcess;
+    pVar;
+}
+
+
+VOID   CEXPENTRY  SqlListDatabases     ( VOID )
+{
+}
+
+
+VOID   CEXPENTRY  SqlListTables        ( PSQLPROCESS pSqlProcess )
+{
+    pSqlProcess;
+}
+
+
+VOID   CEXPENTRY  SqlListColumns       ( PSQLPROCESS pSqlProcess )
+{
+    pSqlProcess;
+}
+
+
+
+PSQLDA AllocSqlDa ( int cbSqlDa )
+{
+    PSQLDA pSqlDa;
+    
+    pSqlDa = ( PSQLDA ) malloc ( SQLDASIZE ( cbSqlDa ) );
+
+    if ( pSqlDa == NULL )
+    {
+        exit ( 8 );
+    }
+
+    strncpy ( pSqlDa->sqldaid, "SQLDA   ", 8 );
+    pSqlDa->sqldabc = (long) SQLDASIZE ( cbSqlDa );
+    pSqlDa->sqln    = cbSqlDa;
+    pSqlDa->sqld    = 0;
+    
+    return pSqlDa;
+}
+
+void FreeSqlDa ( PSQLDA pSqlDa )
+{
+    free ( pSqlDa );
+}
+
+int    AllocRow     ( PSQLDA pSqlDa )
+{
+    int i;
+
+    for ( i = 0; i < pSqlDa->sqld; i++ )
+    {
+        pSqlDa->sqlvar[i].sqldata = (PBYTE) malloc ( pSqlDa->sqlvar[i].sqllen );
+    
+        if ( pSqlDa->sqlvar[i].sqldata == NULL )
+        {
+            exit ( 8 );
+        }
+        
+        if ( pSqlDa->sqlvar[i].sqltype & 1 )
+        {
+            pSqlDa->sqlvar[i].sqlind = (PSHORT) malloc ( 2 );
+            if ( pSqlDa->sqlvar[i].sqldata == NULL )
+            {
+                exit ( 8 );
+            }
+            
+            pSqlDa->sqldabc += 21;
+        }
+        
+        pSqlDa->sqldabc += pSqlDa->sqlvar[i].sqllen;
+    }
+
+    return 0;
+}
+
+void   FreeRow      ( PSQLDA pSqlDa )
+{
+    int i;
+
+    for ( i = 0; i < pSqlDa->sqld; i++ )
+    {
+        free ( pSqlDa->sqlvar[i].sqldata );
+    }
+}
+
+
+void   BindRow      ( PSQLPROCESS pSqlProcess )
+{
+    INT         i;
+    SHORT       sDataLen;
+    PSQLDA      pSqlDa;
+    PCHAR       pChar;
+    PVARCHAR    pVarChar;
+    BYTE        p;
+    BYTE        s;
+    BYTE        l;
+    PBYTE       pData;
+    double      value;
+
+    pSqlDa = pSqlProcess->pSqlDa;
+    
+    for ( i = 0; i < pSqlDa->sqld; i++ )
+    {
+        sDataLen = pSqlDa->sqlvar[i].sqllen;
+        
+        switch ( pSqlDa->sqlvar[i].sqltype )
+        {
+            case 452:        // CHAR ( n )
+	    case 453:
+		*(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = '\0';
+                pChar = pSqlDa->sqlvar[i].sqldata;
+                strncpy ( pSqlProcess->pBindVar->pBindType[i].pBindAddress, pChar, sDataLen );
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress + sDataLen) = '\0';
+                break;
+        
+            case 448:       // VARCHAR ( n )
+	    case 449:
+		*(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = '\0';
+                pVarChar = (PVARCHAR)pSqlDa->sqlvar[i].sqldata;
+                strncpy ( pSqlProcess->pBindVar->pBindType[i].pBindAddress, 
+                          pVarChar->achString, pVarChar->sVarLen );
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress + pVarChar->sVarLen) = '\0';
+                break;
+                
+            case 456:       // LONG VARCHAR ( n )
+            case 457:
+                break;
+        
+            case 500:       // SMALLINT
+            case 501:
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = *(pSqlDa->sqlvar[i].sqldata);
+                break;
+        
+            case 496:       // INTEGER
+            case 497:
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = *(pSqlDa->sqlvar[i].sqldata);
+                break;
+        
+            case 480:       // FLOAT
+            case 481:
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = (double)*(pSqlDa->sqlvar[i].sqldata);
+                break;
+        
+            case 484:       // DECIMAL ( p, s )
+            case 485:
+                p = (BYTE)(sDataLen & 0x00FF);
+                s = (BYTE)(sDataLen >> 8);
+                l = (BYTE)(p + 2) / 2;
+                pData = pSqlDa->sqlvar[i].sqldata;
+                value = PackedToDouble ( p, s, l, pData );
+                memcpy ( pSqlProcess->pBindVar->pBindType[i].pBindAddress, &value, sizeof (double) );
+                break;
+        
+            case 384:       // DATE
+            case 385:
+		*(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = '\0';
+                pChar = pSqlDa->sqlvar[i].sqldata;
+                strncpy ( pSqlProcess->pBindVar->pBindType[i].pBindAddress, pChar, sDataLen );
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress + sDataLen) = '\0';
+                break;
+        
+            case 388:       // TIME
+            case 389:
+		*(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = '\0';
+                pChar = pSqlDa->sqlvar[i].sqldata;
+                strncpy ( pSqlProcess->pBindVar->pBindType[i].pBindAddress, pChar, sDataLen );
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress + sDataLen) = '\0';
+                break;
+        
+            case 392:       // TIMESTAMP
+            case 393:
+		*(pSqlProcess->pBindVar->pBindType[i].pBindAddress) = '\0';
+                pChar = pSqlDa->sqlvar[i].sqldata;
+                strncpy ( pSqlProcess->pBindVar->pBindType[i].pBindAddress, pChar, sDataLen );
+                *(pSqlProcess->pBindVar->pBindType[i].pBindAddress + sDataLen) = '\0';
+                break;
+        }
+    }
+}
+
+double PackedToDouble ( BYTE p, BYTE s, BYTE l, PBYTE pData )
+{
+    double  ret;
+    char    ach[34];
+    PBYTE   pByte;
+    double  shift;
+    int     i;
+    
+    ach[0] = '+';
+    for ( pByte = pData, i = 0; i < p; i+=2 )
+    {
+        ach[i+1] = (*pByte >> 4) + 48;
+        ach[i+2] = (*pByte & 0x0F ) + 48;
+
+        pByte++;
+    }
+
+    ach[p+1] = '\0';
+    
+    ret = atof ( ach );
+    
+    shift = pow ( 10.0 , (double)s );
+    ret = ret / shift;
+             
+    return ret;
+}

@@ -1,0 +1,32 @@
+LIBRARY DBSQL INITINSTANCE
+
+PROTMODE
+
+DATA NONSHARED
+
+HEAPSIZE 4096
+
+EXPORTS
+	_SqlCreateDatabase
+	_SqlOpenDB
+	_SqlCloseDB
+	_SqlCommand
+	_SqlCommandf
+	_SqlExecute
+	_SqlBindByNum
+	_SqlBindByName
+	_SqlResults
+	_SqlOpenCursor
+	_SqlCloseCursor
+	_SqlFetchRow
+	_SqlCommit
+	_SqlRollback
+	_SqlImport
+	_SqlExport
+        _SqlGetNumberColumns
+        _SqlGetColumnNameInfo
+	_SqlCreateColumnVar
+	_SqlDeleteColumnVar
+	_SqlListDatabases
+	_SqlListTables
+	_SqlListColumns

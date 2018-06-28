@@ -1,0 +1,56 @@
+
+
+
+
+
+#include <os2.h>
+#include <stdio.h>
+#include <sqlenv.h>
+
+EXEC SQL INCLUDE SQLCA;
+
+struct  sqledinfo   *sqledinfo;
+
+CHAR    chDrive;
+USHORT  sHandle;
+USHORT  sCount;
+SHORT   i,j;
+
+VOID main ( );
+
+VOID main ( )
+{
+    chDrive = 'C';
+    
+    sqledops ( chDrive, &sHandle, &sCount, &sqlca );
+
+    for ( i = 0; i < sCount; i++ )
+    {
+        sqledgne ( sHandle, &sqledinfo, &sqlca );
+    
+        if ( sqlca.sqlcode == 0 )
+        {
+            for ( j = 0; j < SQL_DBNAME_SZ; j++ )
+                printf ( "%c", sqledinfo->dbname[j] );
+	    printf ( "  " );
+
+	    for ( j = 0; j < SQL_ALIAS_SZ; j++ )
+		printf ( "%c", sqledinfo->alias[j] );
+	    printf ( "  " );
+
+	    for ( j = 0; j < SQL_INAME_SZ; j++ )
+		printf ( "%c", sqledinfo->intname[j] );
+	    printf ( "  " );
+
+	    for ( j = 0; j < SQL_NNAME_SZ; j++ )
+		printf ( "%c", sqledinfo->nodename[j] );
+	    printf ( "  " );
+
+            for ( j = 0; j < SQL_CMT_SZ; j++ )
+		printf ( "%c", sqledinfo->comment[j] );
+	    printf ( "  " );
+
+	    printf ( "\n" );
+        }
+    }
+}
